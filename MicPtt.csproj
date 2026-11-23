@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>MicKey</AssemblyName>
+    <RootNamespace>MicPtt</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Properties\MicKey.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <Company>Local tools</Company>
+    <Product>MicKey</Product>
+    <Description>마이크를 키보드로 제어하는 Windows 앱</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="tests\**;artifacts\**" />
+    <EmbeddedResource Remove="tests\**;artifacts\**" />
+    <None Remove="tests\**;artifacts\**" />
+  </ItemGroup>
+</Project>

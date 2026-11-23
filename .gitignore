@@ -1,0 +1,24 @@
+# Build products and release bundles
+**/bin/
+**/obj/
+/dist/
+/releases/
+/artifacts/
+*.pdb
+
+# Local IDE state
+.vs/
+.idea/
+*.user
+*.suo
+
+# Per-computer settings, diagnostics and credentials
+settings.json
+settings.json.tmp
+errors.log
+*.log
+.env
+.env.*
+*.pfx
+*.p12
+*.key
