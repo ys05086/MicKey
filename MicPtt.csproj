@@ -9,12 +9,13 @@
     <RootNamespace>MicPtt</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Properties\MicKey.ico</ApplicationIcon>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Company>Local tools</Company>
     <Product>MicKey</Product>
     <Description>마이크를 키보드로 제어하는 Windows 앱</Description>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
     <Compile Remove="tests\**;artifacts\**" />
     <EmbeddedResource Remove="tests\**;artifacts\**" />
     <None Remove="tests\**;artifacts\**" />

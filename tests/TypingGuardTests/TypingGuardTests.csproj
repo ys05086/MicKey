@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\InputGuardSettings.cs" Link="InputGuardSettings.cs" />
+    <Compile Include="..\..\Input\Hotkey.cs" Link="Hotkey.cs" />
+    <Compile Include="..\..\Input\TalkStateMachine.cs" Link="TalkStateMachine.cs" />
+    <Compile Include="..\..\Input\TypingGuardPolicy.cs" Link="TypingGuardPolicy.cs" />
+    <Compile Include="..\..\Input\GlobalShortcutObserver.cs" Link="GlobalShortcutObserver.cs" />
+  </ItemGroup>
+</Project>

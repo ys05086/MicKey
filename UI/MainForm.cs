@@ -9,6 +9,15 @@ internal sealed class MainForm : Form
 {
     private readonly AppSettings settings = AppSettings.Load();
     private readonly TalkStateMachine policy = new();
+    private readonly TypingGuardPolicy typingGuard = new();
+    private readonly TextInputDetector textInputs = new();
+    private readonly Dictionary<int, string?> processNames = new();
+    private readonly HashSet<string> availableDeviceIds = new();
+    private bool populatingDevices;
+    private string? inputGuardReason;
+    private nint lastGuardWindow;
+    private int lastGuardProcess;
+    private readonly RoundedButton resumeInput = new() { Text = "입력 보호 해제" };
     private readonly System.Windows.Forms.Timer poll = new() { Interval = 15 };
     private readonly Stopwatch verifyClock = Stopwatch.StartNew();
     private readonly ComboBox devices = new();
@@ -18,7 +27,7 @@ internal sealed class MainForm : Form
     private readonly RoundedButton shortcut = new();
     private readonly RoundedButton start = new() { Text = "마이크 제어 시작", Accent = true };
     private readonly RoundedButton hide = new() { Text = "트레이로 숨기기" };
-    private readonly RoundedButton preferencesButton = new() { Text = "효과음 · 오버레이 설정" };
+    private readonly RoundedButton preferencesButton = new() { Text = "설정 · 입력 보호 · 효과음 · 오버레이" };
     private readonly FeedbackSoundPlayer sounds = new();
     private readonly MicrophoneOverlay overlay = new();
     private readonly ToolStripMenuItem trayOverlay = new("상태 오버레이 표시");
@@ -60,6 +69,7 @@ internal sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         Icon = idleIcon;
+        typingGuard.Configure(settings.InputGuard);
         BuildUi();
         BuildTray();
         overlay.PositionChanged += point => { settings.Overlay.X = point.X; settings.Overlay.Y = point.Y; SaveSettings(); };
@@ -90,6 +100,11 @@ internal sealed class MainForm : Form
     private void BuildUi()
     {
         AddLabel(this, "MIC KEY", new(24, 16, 300, 24), 10, Theme.Mint, true);
+        resumeInput.Bounds = new(376, 14, 160, 30);
+        resumeInput.Font = new Font("맑은 고딕", 8.5f);
+        resumeInput.Click += (_, _) => ResumeInputProtection();
+        tips.SetToolTip(resumeInput, "수동 잠금과 마지막 게임의 채팅 보호를 해제합니다. 입력창 자동 감지는 계속 적용됩니다.");
+        Controls.Add(resumeInput);
         AddLabel(this, "말할 때만, 마이크 ON", new(22, 44, 516, 44), 22, Theme.Text, true);
 
         var card = new Panel { Bounds = new(24, 106, 512, 138), BackColor = Theme.Surface };
@@ -114,9 +129,10 @@ internal sealed class MainForm : Form
         devices.AccessibleName = "입력 마이크 선택";
         devices.SelectedIndexChanged += (_, _) =>
         {
-            if (devices.SelectedItem is AudioDevice selected)
+            if (!populatingDevices && devices.SelectedItem is AudioDevice selected)
             {
                 settings.DeviceId = selected.Id;
+                notice = availableDeviceIds.Contains(selected.Id) ? null : "저장한 마이크를 찾지 못했어요. 다른 마이크를 선택하세요.";
                 tips.SetToolTip(devices, selected.Name);
                 SaveSettings();
                 UpdateUi();
@@ -170,8 +186,9 @@ internal sealed class MainForm : Form
         trayStart.Click += (_, _) => { if (active) StopControl(); else StartControl(); };
         menu.Items.Add(trayMute);
         trayMute.Click += (_, _) => ForceMute();
+        menu.Items.Add("입력 보호 해제", null, (_, _) => ResumeInputProtection());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("효과음 · 오버레이 설정", null, (_, _) => OpenPreferences());
+        menu.Items.Add("설정 · 입력 보호 · 효과음 · 오버레이", null, (_, _) => OpenPreferences());
         menu.Items.Add(trayOverlay);
         trayOverlay.Click += (_, _) => { settings.Overlay.Enabled = !settings.Overlay.Enabled; ApplyPresentationSettings(); };
         menu.Items.Add(new ToolStripSeparator());
@@ -188,30 +205,42 @@ internal sealed class MainForm : Form
         if (active) return;
         try
         {
+            populatingDevices = true;
             var available = CoreAudio.ListCaptureDevices();
+            availableDeviceIds.Clear();
+            foreach (var item in available) availableDeviceIds.Add(item.Id);
             string? wanted = settings.DeviceId ?? CoreAudio.GetDefaultCaptureId();
             var selected = available.FirstOrDefault(d => d.Id == wanted);
-            if (selected is null)
+            if (selected is null && settings.DeviceId is null)
             {
                 var defaultId = CoreAudio.GetDefaultCaptureId();
                 selected = available.FirstOrDefault(d => d.Id == defaultId) ?? available.FirstOrDefault();
             }
             devices.Items.Clear();
             foreach (var device in available) devices.Items.Add(device);
+            if (selected is null && settings.DeviceId is not null)
+            {
+                selected = new AudioDevice(settings.DeviceId, "저장한 마이크가 연결되지 않았어요 · 다시 선택하세요");
+                devices.Items.Add(selected);
+            }
             if (selected is not null) devices.SelectedItem = selected;
-            notice = available.Count == 0 ? "연결된 마이크가 없어요. 연결 후 새로고침을 눌러 주세요." : null;
+            if (settings.DeviceId is null) settings.DeviceId = selected?.Id;
+            notice = selected is not null && !availableDeviceIds.Contains(selected.Id)
+                ? "저장한 마이크를 찾지 못했어요. 연결하거나 다른 마이크를 선택하세요."
+                : available.Count == 0 ? "연결된 마이크가 없어요. 연결 후 새로고침을 눌러 주세요." : null;
         }
         catch (Exception ex)
         {
             notice = "마이크 목록을 읽지 못했어요. 새로고침으로 다시 시도하세요.";
             Log(ex);
         }
+        finally { populatingDevices = false; }
         UpdateUi();
     }
 
     private void StartControl()
     {
-        if (active || devices.SelectedItem is not AudioDevice selected) return;
+        if (active || devices.SelectedItem is not AudioDevice selected || !availableDeviceIds.Contains(selected.Id)) return;
         if (capturing) EndCapture(null);
         CoreAudio? candidate = null;
         GlobalShortcutObserver? candidateKeyboard = null;
@@ -219,6 +248,13 @@ internal sealed class MainForm : Form
         try
         {
             candidateKeyboard = new GlobalShortcutObserver(settings.Shortcut);
+            candidateKeyboard.ConfigureGuard(GuardCommandKeys());
+            candidateKeyboard.TextInputBlockedProbe = () =>
+            {
+                if (!settings.InputGuard.AutoDetectTextInput) return false;
+                var snapshot = textInputs.Snapshot;
+                return snapshot.IsTextInput || snapshot.IsUnknown;
+            };
             candidate = new CoreAudio(selected.Id);
             previous = candidate.IsMuted;
             candidate.SetMuted(true);
@@ -332,6 +368,9 @@ internal sealed class MainForm : Form
         if (replacement is not null)
         {
             settings.Shortcut = replacement;
+            settings.Normalize();
+            typingGuard.Configure(settings.InputGuard);
+            keyboard?.ConfigureGuard(GuardCommandKeys());
             SaveSettings();
         }
         keyboard?.Configure(settings.Shortcut);
@@ -344,16 +383,32 @@ internal sealed class MainForm : Form
         if (!active || endpoint is null) return;
         try
         {
+            string? previousReason = inputGuardReason;
+            var foreground = TextInputDetector.GetForegroundInfo();
+            UpdateGuardReason(foreground);
+            policy.SetInputBlocked(inputGuardReason is not null, policy.LastKeyDown);
             bool sawTransition = false;
-            while (keyboard is not null && keyboard.TryRead(out bool down))
+            long consumedCommand = -1;
+            while (keyboard is not null && keyboard.TryReadSignal(out var signal))
             {
                 sawTransition = true;
                 if (!capturing && !locked && !suspended && !preferencesOpen)
                 {
-                    bool eventMuted = policy.Update(down);
+                    if (signal.Kind == KeyboardSignalKind.Command)
+                    {
+                        if (typingGuard.ProcessCommand(signal.KeyData, signal.WindowHandle, signal.ProcessId, GetProcessName(signal.ProcessId)))
+                            consumedCommand = signal.EventId;
+                        UpdateGuardReason(foreground);
+                        continue;
+                    }
+                    bool wrongWindow = signal.WindowHandle != foreground.WindowHandle || signal.ProcessId != foreground.ProcessId;
+                    bool blocked = inputGuardReason is not null || signal.TextInputBlocked || consumedCommand == signal.EventId || wrongWindow;
+                    bool eventMuted = policy.Update(signal.IsDown, blocked);
                     if (lastApplied != eventMuted) ApplyMuted(eventMuted);
                 }
             }
+            UpdateGuardReason(foreground);
+            policy.SetInputBlocked(inputGuardReason is not null, keyboard?.CurrentIsDown ?? settings.Shortcut.IsDown());
             // Hook events retain even very short taps. Polling only supplies a missing release;
             // it must never invent an extra press and toggle the microphone a second time.
             if (!sawTransition && !capturing && !locked && !suspended && !preferencesOpen && !settings.Shortcut.IsDown())
@@ -364,7 +419,7 @@ internal sealed class MainForm : Form
                 ApplyMuted(desired);
                 UpdateUi();
             }
-            else if (sawTransition) UpdateUi();
+            else if (sawTransition || previousReason != inputGuardReason) UpdateUi();
             if (verifyClock.ElapsedMilliseconds >= 200)
             {
                 verifyClock.Restart();
@@ -427,12 +482,14 @@ internal sealed class MainForm : Form
         Color stateColor = speaking ? Theme.Mint : active ? Theme.Amber : Theme.Secondary;
         statusTag.Text = active ? (settings.Mode == TalkMode.HoldToTalk ? "●  PUSH TO TALK" : "●  TOGGLE MUTE") : "○  READY";
         statusTag.ForeColor = stateColor;
+        if (active && inputGuardReason is not null) statusTag.Text = "●  INPUT GUARD";
         statusTitle.Text = notice is not null ? "마이크를 확인해 주세요" : !active ? "시작할 준비가 됐어요" :
             speaking ? (settings.Mode == TalkMode.HoldToTalk ? "말하는 중" : "마이크 켜짐") : "음소거 중";
         statusTitle.ForeColor = notice is not null ? Theme.Red : stateColor;
-        statusDetail.Text = notice ?? (preferencesOpen && active ? "효과음과 오버레이를 설정하는 동안에는 음소거됩니다." :
+        statusDetail.Text = notice ?? (preferencesOpen && active ? "설정창을 사용하는 동안에는 음소거됩니다." :
             capturing ? "새 단축키를 누르세요. Ctrl / Alt / Shift 조합도 가능해요.\nEsc를 누르면 취소합니다." :
             locked || suspended ? "잠금 또는 절전 중에는 마이크를 음소거합니다." :
+            active && inputGuardReason is not null ? inputGuardReason + " · 단축키를 잠갔어요.\n수동 잠금/해제: " + settings.InputGuard.PauseShortcut.DisplayName :
             !active ? "마이크와 단축키를 선택하고 시작하세요.\n시작할 때는 항상 음소거 상태예요." :
             settings.Mode == TalkMode.HoldToTalk ? $"[ {settings.Shortcut.DisplayName} ] 키를 누르는 동안만 소리가 전달돼요.\n키를 놓으면 다시 음소거됩니다." :
             $"[ {settings.Shortcut.DisplayName} ] 키를 한 번 누르면 상태가 바뀌어요.\n다시 누르면 마이크가 { (speaking ? "꺼집니다" : "켜집니다") }.");
@@ -442,7 +499,8 @@ internal sealed class MainForm : Form
         hold.Invalidate(); toggle.Invalidate();
         devices.Enabled = !active;
         refresh.Enabled = !active;
-        start.Enabled = active || devices.SelectedItem is AudioDevice;
+        start.Enabled = active || devices.SelectedItem is AudioDevice selectedDevice && availableDeviceIds.Contains(selectedDevice.Id);
+        resumeInput.Enabled = active;
         start.Text = active ? "제어 중지 · 이전 상태 복원" : "마이크 제어 시작";
         start.Accent = !active;
         start.Invalidate();
@@ -454,7 +512,7 @@ internal sealed class MainForm : Form
         Icon = currentIcon;
         tray.Text = "MicKey · " + (active ? speaking ? "마이크 켜짐" : "음소거" : "제어 중지") + " · " + settings.Shortcut.DisplayName;
         trayOverlay.Checked = settings.Overlay.Enabled;
-        overlay.SetStatus(active, !speaking, settings.Shortcut.DisplayName, notice is not null);
+        overlay.SetStatus(active, !speaking, settings.Shortcut.DisplayName, notice is not null, active ? inputGuardReason : null);
     }
 
     private void PlayFeedback(bool muted, bool preview = false)
@@ -484,8 +542,9 @@ internal sealed class MainForm : Form
 
     private void ApplyPresentationSettings()
     {
-        settings.Sound.Normalize();
-        settings.Overlay.Normalize();
+        settings.Normalize();
+        typingGuard.Configure(settings.InputGuard);
+        keyboard?.ConfigureGuard(GuardCommandKeys());
         overlay.ApplySettings(settings.Overlay);
         SaveSettings();
         UpdateUi();
@@ -501,7 +560,8 @@ internal sealed class MainForm : Form
         try
         {
             using var dialog = new PreferencesForm(settings, ApplyPresentationSettings,
-                on => PlayFeedback(!on, preview: true), editing => overlay.SetEditing(editing));
+                on => PlayFeedback(!on, preview: true), editing => overlay.SetEditing(editing),
+                SaveSettingsOrThrow, path => settings.SaveTo(path), ImportSettings);
             preferences = dialog;
             dialog.ShowDialog(this);
         }
@@ -518,12 +578,78 @@ internal sealed class MainForm : Form
 
     private void SaveSettings()
     {
-        try { settings.Save(); saveNote.Text = ""; }
+        try { SaveSettingsOrThrow(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             saveNote.Text = "설정을 저장하지 못했어요. 현재 실행에서는 계속 사용할 수 있습니다.";
             Log(ex);
         }
+    }
+
+    private void SaveSettingsOrThrow()
+    {
+        settings.Save();
+        saveNote.Text = $"설정 저장됨 · {DateTime.Now:HH:mm:ss}";
+    }
+
+    private IEnumerable<Keys> GuardCommandKeys() => settings.InputGuard.ChatRules.Select(rule => rule.OpenShortcut.Key)
+        .Append(settings.InputGuard.PauseShortcut.Key);
+
+    private string? GetProcessName(int processId)
+    {
+        if (processId <= 0) return null;
+        if (processNames.TryGetValue(processId, out var cached)) return cached;
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            cached = process.ProcessName;
+        }
+        catch (ArgumentException) { cached = null; }
+        catch (InvalidOperationException) { cached = null; }
+        catch (System.ComponentModel.Win32Exception) { cached = null; }
+        if (processNames.Count > 128) processNames.Clear();
+        processNames[processId] = cached;
+        return cached;
+    }
+
+    private void UpdateGuardReason(ForegroundWindowInfo foreground)
+    {
+        var snapshot = textInputs.Snapshot;
+        inputGuardReason = typingGuard.GetReason(foreground.WindowHandle, foreground.ProcessId,
+            snapshot.IsTextInput, snapshot.IsUnknown || snapshot.WindowHandle != foreground.WindowHandle || snapshot.ProcessId != foreground.ProcessId);
+        if (typingGuard.IsChatProtected(foreground.WindowHandle, foreground.ProcessId))
+        {
+            lastGuardWindow = foreground.WindowHandle;
+            lastGuardProcess = foreground.ProcessId;
+        }
+    }
+
+    private void ResumeInputProtection()
+    {
+        typingGuard.ResumeCurrentWindow(lastGuardWindow, lastGuardProcess);
+        var foreground = TextInputDetector.GetForegroundInfo();
+        typingGuard.ResumeCurrentWindow(foreground.WindowHandle, foreground.ProcessId);
+        keyboard?.Configure(settings.Shortcut);
+        UpdateGuardReason(foreground);
+        policy.SetInputBlocked(inputGuardReason is not null, settings.Shortcut.IsDown());
+        UpdateUi();
+    }
+
+    private void ImportSettings(string path)
+    {
+        // Read and validate completely before replacing the current configuration.
+        var replacement = AppSettings.ReadFrom(path);
+        // Persist before replacing live references, so a failed save leaves the
+        // open settings dialog and its handlers bound to the original settings.
+        replacement.Save();
+        if (active) StopControl();
+        settings.CopyFrom(replacement);
+        typingGuard.Configure(settings.InputGuard);
+        overlay.ApplySettings(settings.Overlay);
+        policy.Reset(settings.Mode, settings.Shortcut.IsDown());
+        RefreshDevices();
+        saveNote.Text = $"설정 불러옴 · {DateTime.Now:HH:mm:ss}";
+        UpdateUi();
     }
 
     private void HideToTray()
@@ -603,6 +729,7 @@ internal sealed class MainForm : Form
         if (disposing)
         {
             poll.Dispose();
+            textInputs.Dispose();
             sounds.PlaybackFailed -= OnSoundFailure;
             sounds.Dispose();
             overlay.Dispose();

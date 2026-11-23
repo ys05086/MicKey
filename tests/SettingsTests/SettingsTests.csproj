@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\AppSettings.cs" Link="AppSettings.cs" />
+    <Compile Include="..\..\SoundSettings.cs" Link="SoundSettings.cs" />
+    <Compile Include="..\..\OverlaySettings.cs" Link="OverlaySettings.cs" />
+    <Compile Include="..\..\InputGuardSettings.cs" Link="InputGuardSettings.cs" />
+    <Compile Include="..\..\Input\Hotkey.cs" Link="Hotkey.cs" />
+    <Compile Include="..\..\Input\TalkStateMachine.cs" Link="TalkStateMachine.cs" />
+    <Compile Include="..\..\Audio\FeedbackSoundPlayer.cs" Link="FeedbackSoundPlayer.cs" />
+    <Compile Include="..\..\Audio\CoreAudio.cs" Link="CoreAudio.cs" />
+  </ItemGroup>
+</Project>

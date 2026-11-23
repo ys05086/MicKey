@@ -18,6 +18,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Overlay tests failed with exit code $LASTEXITCODE." }
     & dotnet run --project (Join-Path $PSScriptRoot 'tests\FeedbackAudioTests\FeedbackAudioTests.csproj') --configuration Release
     if ($LASTEXITCODE -ne 0) { throw "Feedback audio tests failed with exit code $LASTEXITCODE." }
+    foreach ($taskSuite in @('SettingsTests', 'TypingGuardTests', 'TextInputTests')) {
+        & dotnet run --project (Join-Path $PSScriptRoot "tests\$taskSuite\$taskSuite.csproj") --configuration Release
+        if ($LASTEXITCODE -ne 0) { throw "$taskSuite failed with exit code $LASTEXITCODE." }
+    }
 
     & dotnet publish $taskProject --configuration Release --runtime win-x64 --self-contained true `
         -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
