@@ -216,4 +216,160 @@ Check(!manualToggle.Update(true) && !manualToggle.Update(false),
 Check(manualToggle.Update(true) && manualToggle.Update(false),
     "Subsequent keyboard operation stays in toggle mode after explicit UI actions.");
 
+// Sprinting with Shift must not suppress an otherwise plain microphone key.
+// Capture/equality and explicitly modified shortcuts still retain exact meanings.
+var plainT = new Hotkey(Keys.T);
+Check(plainT.MatchesKeyData(Keys.T) && plainT.MatchesKeyData(Keys.Shift | Keys.T),
+    "A plain microphone binding accepts its key with or without Shift.");
+Check(!plainT.MatchesKeyData(Keys.W) && !plainT.MatchesKeyData(Keys.Control | Keys.T)
+    && !plainT.MatchesKeyData(Keys.Alt | Keys.T) && !plainT.MatchesKeyData(Keys.Shift | Keys.T, windowsDown: true),
+    "Unrelated keys and Ctrl/Alt/Windows combinations remain separate from plain T.");
+Check(!plainT.MatchesKeyData(Keys.T | (Keys)0x40000000), "Unknown key-data flags cannot match a microphone shortcut.");
+Check(!plainT.MatchesState(false, false, false, true), "Shift alone never counts as the microphone key.");
+Check(new Hotkey(Keys.T, Shift: true).MatchesKeyData(Keys.Shift | Keys.T)
+    && !new Hotkey(Keys.T, Shift: true).MatchesKeyData(Keys.T), "Explicit Shift+T still requires Shift.");
+Check(new Hotkey(Keys.T, Control: true).MatchesKeyData(Keys.Control | Keys.T)
+    && !new Hotkey(Keys.T, Control: true).MatchesKeyData(Keys.Control | Keys.Shift | Keys.T),
+    "Explicit Ctrl+T continues to reject extra Shift.");
+Check(new Hotkey(Keys.T, Alt: true).MatchesKeyData(Keys.Alt | Keys.T)
+    && !new Hotkey(Keys.T, Alt: true).MatchesKeyData(Keys.Alt | Keys.Shift | Keys.T),
+    "Explicit Alt+T continues to reject extra Shift.");
+Check(new Hotkey(Keys.T, Control: true, Shift: true).MatchesKeyData(Keys.Control | Keys.Shift | Keys.T)
+    && !new Hotkey(Keys.T, Control: true, Shift: true).MatchesKeyData(Keys.Control | Keys.T),
+    "Explicit Ctrl+Shift+T keeps both required modifiers.");
+Check(Hotkey.TryFromKeyData(Keys.Shift | Keys.T, out var capturedShiftT)
+    && capturedShiftT == new Hotkey(Keys.T, Shift: true) && capturedShiftT != plainT,
+    "Shortcut capture and record equality do not discard an explicitly chosen Shift modifier.");
+
+void Feed(KeyboardSignalBuffer buffer, Keys key, bool down) => buffer.Observe((uint)key, 0, 0, down,
+    () => new KeyboardSignalContext((nint)1, 2, false));
+
+List<bool> Pump(KeyboardSignalBuffer buffer, TalkStateMachine state)
+{
+    var observed = new List<bool>();
+    while (buffer.TryRead(out var signal))
+    {
+        if (signal.Kind != KeyboardSignalKind.Shortcut) continue;
+        observed.Add(signal.IsDown);
+        state.Update(signal.IsDown);
+    }
+    return observed;
+}
+
+foreach (var mode in Enum.GetValues<TalkMode>())
+foreach (var sprintShift in new[] { Keys.LShiftKey, Keys.RShiftKey })
+{
+    var buffer = new KeyboardSignalBuffer();
+    buffer.Configure(plainT, new bool[256]);
+    var state = new TalkStateMachine();
+    state.Reset(mode, false);
+    Feed(buffer, sprintShift, true);
+    Feed(buffer, Keys.W, true);
+    Check(Pump(buffer, state).Count == 0 && state.Muted, $"{mode}/{sprintShift}: sprint/movement alone has no microphone edge.");
+    Feed(buffer, Keys.T, true);
+    Check(Pump(buffer, state).SequenceEqual([true]) && !state.Muted,
+        $"{mode}/{sprintShift}: pressing T while Shift+W are held activates the microphone.");
+    Check(buffer.CurrentIsDown && plainT.MatchesState(true, false, false, true),
+        $"{mode}/{sprintShift}: hook state and polling matcher agree while sprinting.");
+
+    Feed(buffer, sprintShift, false);
+    Feed(buffer, sprintShift, true);
+    Keys otherShift = sprintShift == Keys.LShiftKey ? Keys.RShiftKey : Keys.LShiftKey;
+    Feed(buffer, otherShift, true);
+    Feed(buffer, sprintShift, false);
+    Feed(buffer, otherShift, false);
+    Feed(buffer, Keys.W, false);
+    Feed(buffer, Keys.W, true);
+    Check(Pump(buffer, state).Count == 0 && buffer.CurrentIsDown && !state.Muted,
+        $"{mode}/{sprintShift}: both Shift keys and movement can change while T stays held, without mute or retoggle.");
+    Check(plainT.MatchesState(true, false, false, false),
+        $"{mode}/{sprintShift}: releasing optional Shift cannot make polling mute held PTT.");
+    Feed(buffer, Keys.T, false);
+    Check(Pump(buffer, state).SequenceEqual([false]) && state.Muted == (mode == TalkMode.HoldToTalk),
+        $"{mode}/{sprintShift}: releasing T retains normal hold/toggle semantics.");
+
+    state.Reset(mode, false);
+    Feed(buffer, sprintShift, true);
+    Feed(buffer, Keys.T, true);
+    Feed(buffer, Keys.T, false);
+    Check(Pump(buffer, state).SequenceEqual([true, false]) && state.Muted == (mode == TalkMode.HoldToTalk),
+        $"{mode}/{sprintShift}: a complete fast T tap during Shift+W is preserved between timer ticks.");
+    Feed(buffer, Keys.T, true);
+    Feed(buffer, Keys.T, false);
+    Pump(buffer, state);
+    Check(state.Muted, $"{mode}/{sprintShift}: the next complete tap ends muted with the configured mode unchanged.");
+}
+
+// Releasing Ctrl/Alt/Windows while T is held must not manufacture a new press.
+foreach (var extraModifier in new[] { Keys.LControlKey, Keys.RControlKey, Keys.LMenu, Keys.RMenu, Keys.LWin, Keys.RWin })
+{
+    var buffer = new KeyboardSignalBuffer();
+    buffer.Configure(plainT, new bool[256]);
+    var state = new TalkStateMachine();
+    state.Reset(TalkMode.HoldToTalk, false);
+    Feed(buffer, Keys.LShiftKey, true);
+    Feed(buffer, Keys.W, true);
+    Feed(buffer, extraModifier, true);
+    Feed(buffer, Keys.T, true);
+    Check(Pump(buffer, state).Count == 0 && state.Muted, $"Extra {extraModifier} still blocks a shifted plain binding.");
+    Feed(buffer, extraModifier, false);
+    Check(Pump(buffer, state).Count == 0 && state.Muted, $"Releasing extra {extraModifier} does not invent a T press.");
+    Feed(buffer, Keys.T, false);
+    Pump(buffer, state);
+    Feed(buffer, Keys.T, true);
+    Check(Pump(buffer, state).SequenceEqual([true]) && !state.Muted, $"Fresh T after releasing {extraModifier} works while Shift+W remain held.");
+    Feed(buffer, extraModifier, true);
+    Check(Pump(buffer, state).SequenceEqual([false]) && state.Muted, $"Pressing {extraModifier} during held PTT still mutes.");
+    Feed(buffer, extraModifier, false);
+    Check(Pump(buffer, state).Count == 0 && state.Muted, $"Removing interrupting {extraModifier} cannot reopen PTT until a fresh key press.");
+}
+
+var requiredShiftBuffer = new KeyboardSignalBuffer();
+requiredShiftBuffer.Configure(new Hotkey(Keys.T, Shift: true), new bool[256]);
+var requiredShiftState = new TalkStateMachine();
+requiredShiftState.Reset(TalkMode.HoldToTalk, false);
+Feed(requiredShiftBuffer, Keys.LShiftKey, true);
+Feed(requiredShiftBuffer, Keys.RShiftKey, true);
+Feed(requiredShiftBuffer, Keys.W, true);
+Feed(requiredShiftBuffer, Keys.T, true);
+Check(Pump(requiredShiftBuffer, requiredShiftState).SequenceEqual([true]) && !requiredShiftState.Muted,
+    "Explicit Shift+T opens while its required modifier is held.");
+Feed(requiredShiftBuffer, Keys.LShiftKey, false);
+Check(Pump(requiredShiftBuffer, requiredShiftState).Count == 0 && !requiredShiftState.Muted,
+    "Explicit Shift+T remains held when the other Shift key is still down.");
+Feed(requiredShiftBuffer, Keys.RShiftKey, false);
+Check(Pump(requiredShiftBuffer, requiredShiftState).SequenceEqual([false]) && requiredShiftState.Muted,
+    "Releasing the last required Shift mutes explicit Shift+T even while T stays down.");
+
+var shiftedSnapshot = new bool[256];
+shiftedSnapshot[(int)Keys.LShiftKey] = shiftedSnapshot[(int)Keys.W] = shiftedSnapshot[(int)Keys.T] = true;
+var shiftedManualBuffer = new KeyboardSignalBuffer();
+shiftedManualBuffer.Configure(plainT, shiftedSnapshot);
+var shiftedManual = new TalkStateMachine();
+shiftedManual.Reset(TalkMode.HoldToTalk, shiftedManualBuffer.CurrentIsDown);
+Check(shiftedManualBuffer.CurrentIsDown && shiftedManual.Muted, "Shift+W+T held at activation remains blocked until release.");
+shiftedManual.ToggleManual(true);
+Feed(shiftedManualBuffer, Keys.LShiftKey, false);
+Feed(shiftedManualBuffer, Keys.W, false);
+Feed(shiftedManualBuffer, Keys.T, false);
+Pump(shiftedManualBuffer, shiftedManual);
+Check(!shiftedManual.Muted && shiftedManual.ManualHoldOpen,
+    "Manual opening during held Shift+W+T survives releases from the old chord.");
+Feed(shiftedManualBuffer, Keys.LShiftKey, true);
+Feed(shiftedManualBuffer, Keys.W, true);
+Feed(shiftedManualBuffer, Keys.T, true);
+Pump(shiftedManualBuffer, shiftedManual);
+Check(!shiftedManual.Muted && !shiftedManual.ManualHoldOpen,
+    "Fresh shifted T transfers manual-open hold mode back to normal PTT.");
+shiftedManual.ToggleManual(true);
+Feed(shiftedManualBuffer, Keys.LShiftKey, false);
+Feed(shiftedManualBuffer, Keys.W, false);
+Check(Pump(shiftedManualBuffer, shiftedManual).Count == 0 && shiftedManual.Muted,
+    "Manual mute while Shift+W+T is held is not undone by Shift/movement release.");
+Feed(shiftedManualBuffer, Keys.T, false);
+Pump(shiftedManualBuffer, shiftedManual);
+Feed(shiftedManualBuffer, Keys.T, true);
+Check(Pump(shiftedManualBuffer, shiftedManual).SequenceEqual([true]) && !shiftedManual.Muted,
+    "Release then fresh T works after manual mute of the shifted chord.");
+
 Console.WriteLine($"PASS: {checks} keyboard and microphone-policy checks.");

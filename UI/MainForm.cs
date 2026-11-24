@@ -355,7 +355,7 @@ internal sealed class MainForm : Form
         {
             // Inside our own window, Space/arrows used as a shortcut must not also click
             // the focused settings button. Other applications still receive their input.
-            if (active && Hotkey.TryFromKeyData(keyData, out var pressed) && pressed == settings.Shortcut)
+            if (active && settings.Shortcut.MatchesKeyData(keyData))
                 return true;
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -366,7 +366,7 @@ internal sealed class MainForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (!capturing && active && Hotkey.TryFromKeyData(e.KeyData, out var pressed) && pressed == settings.Shortcut)
+        if (!capturing && active && settings.Shortcut.MatchesKeyData(e.KeyData))
         {
             e.Handled = true;
             e.SuppressKeyPress = true;

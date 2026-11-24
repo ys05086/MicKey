@@ -9,7 +9,7 @@
     <RootNamespace>MicPtt</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Properties\MicKey.ico</ApplicationIcon>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <Company>Local tools</Company>
     <Product>MicKey</Product>
     <Description>마이크를 키보드로 제어하는 Windows 앱</Description>

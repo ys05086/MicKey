@@ -144,6 +144,50 @@ try
     Assert(collision.InputGuard.PauseShortcut == new Hotkey(Keys.F10, Control: true, Alt: true),
         "A custom pause/microphone collision must restore the normal pause shortcut");
 
+    var plainMicrophone = new AppSettings
+    {
+        DeviceId = "foreign-device-kept-during-migration", Shortcut = new Hotkey(Keys.T), Mode = TalkMode.ToggleMute,
+        InputGuard = new InputGuardSettings { PauseShortcut = new Hotkey(Keys.T, Shift: true) }
+    };
+    Assert(plainMicrophone.PauseShortcutConflicts(new Hotkey(Keys.T, Shift: true)),
+        "The pause-key UI must reject Shift+T when a plain T microphone also accepts Shift");
+    Assert(!plainMicrophone.PauseShortcutConflicts(new Hotkey(Keys.T, Control: true))
+        && !plainMicrophone.PauseShortcutConflicts(new Hotkey(Keys.T, Alt: true))
+        && !plainMicrophone.PauseShortcutConflicts(new Hotkey(Keys.W, Shift: true)),
+        "Different base keys and Ctrl/Alt pause chords do not overlap a plain microphone key");
+    var migrationPath = Path.Combine(testRoot, "shift-collision.json");
+    // Write the previous configuration as-is, bypassing SaveTo's normalization,
+    // to verify that loading an existing file migrates only the colliding pause.
+    File.WriteAllText(migrationPath, JsonSerializer.Serialize(plainMicrophone));
+    var migrationBytes = File.ReadAllBytes(migrationPath);
+    var migrated = AppSettings.ReadFrom(migrationPath);
+    Assert(migrated.Shortcut == new Hotkey(Keys.T) && migrated.Mode == TalkMode.ToggleMute
+        && migrated.DeviceId == plainMicrophone.DeviceId
+        && migrated.InputGuard.PauseShortcut == new Hotkey(Keys.F10, Control: true, Alt: true),
+        "Loading plain T / Shift+T must move only the conflicting pause shortcut");
+    Assert(File.ReadAllBytes(migrationPath).SequenceEqual(migrationBytes),
+        "Loading a legacy collision must not rewrite its source file");
+
+    var explicitShiftMicrophone = new AppSettings
+    {
+        Shortcut = new Hotkey(Keys.T, Shift: true),
+        InputGuard = new InputGuardSettings { PauseShortcut = new Hotkey(Keys.T) }
+    };
+    Assert(!explicitShiftMicrophone.PauseShortcutConflicts(new Hotkey(Keys.T)),
+        "Pause T is exact, so the UI must allow it with microphone Shift+T");
+    explicitShiftMicrophone.Normalize();
+    Assert(explicitShiftMicrophone.InputGuard.PauseShortcut == new Hotkey(Keys.T),
+        "Normalizing the inverse pair must preserve the user's plain pause shortcut");
+    var inversePath = Path.Combine(testRoot, "inverse-shift-pair.json");
+    explicitShiftMicrophone.SaveTo(inversePath);
+    var inverseReloaded = AppSettings.ReadFrom(inversePath);
+    Assert(inverseReloaded.Shortcut == new Hotkey(Keys.T, Shift: true)
+        && inverseReloaded.InputGuard.PauseShortcut == new Hotkey(Keys.T),
+        "Saving and reloading the inverse pair must retain both explicit choices");
+    var explicitControlMicrophone = new AppSettings { Shortcut = new Hotkey(Keys.T, Control: true) };
+    Assert(!explicitControlMicrophone.PauseShortcutConflicts(new Hotkey(Keys.T, Control: true, Shift: true)),
+        "Explicit Ctrl microphone chords remain exact and do not overlap an added Shift");
+
     var atomicPath = Path.Combine(testRoot, "atomic.json");
     copied.SaveTo(atomicPath);
     var originalBytes = File.ReadAllBytes(atomicPath);

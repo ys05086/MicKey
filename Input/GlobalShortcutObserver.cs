@@ -255,11 +255,11 @@ internal sealed class ShortcutTransitionBuffer
         return true;
     }
 
-    private bool ReadChord() => keys[(int)shortcut.Key]
-        && (keys[(int)Keys.LControlKey] || keys[(int)Keys.RControlKey]) == shortcut.Control
-        && (keys[(int)Keys.LMenu] || keys[(int)Keys.RMenu]) == shortcut.Alt
-        && (keys[(int)Keys.LShiftKey] || keys[(int)Keys.RShiftKey]) == shortcut.Shift
-        && !keys[(int)Keys.LWin] && !keys[(int)Keys.RWin];
+    private bool ReadChord() => shortcut.MatchesState(keys[(int)shortcut.Key],
+        keys[(int)Keys.LControlKey] || keys[(int)Keys.RControlKey],
+        keys[(int)Keys.LMenu] || keys[(int)Keys.RMenu],
+        keys[(int)Keys.LShiftKey] || keys[(int)Keys.RShiftKey],
+        WindowsModifierDown);
 
     private static int NormalizeModifier(int key, uint scanCode, uint flags) => (Keys)key switch
     {

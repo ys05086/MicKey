@@ -239,7 +239,8 @@ internal sealed class PreferencesForm : Form
         var pause = new RoundedButton { Text = settings.InputGuard.PauseShortcut.DisplayName + " · 변경", Bounds = new(220, 70, 312, 36) };
         pause.Click += (_, _) => StartCapture(pause, () => settings.InputGuard.PauseShortcut, key =>
         {
-            if (key == settings.Shortcut) { settingsMessage.Text = "마이크 단축키와 다른 키를 골라 주세요."; return; }
+            if (settings.PauseShortcutConflicts(key))
+            { settingsMessage.Text = "마이크 단축키와 겹치는 조합이에요. 다른 키를 골라 주세요."; return; }
             settings.InputGuard.PauseShortcut = key; changed();
         });
         inputPanel.Controls.Add(pause);

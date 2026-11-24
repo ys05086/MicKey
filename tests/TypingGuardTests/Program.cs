@@ -26,7 +26,7 @@ Check(Reason(text: true) == "텍스트 입력 중", "Focused editable input acti
 Check(Reason(unknown: true) == "입력 상태 확인 중", "Unknown focus blocks new activation.");
 Check(!guard.IsChatProtected(gameWindow, gamePid), "Text and unknown metadata cannot create a game-chat latch.");
 Check(!guard.ProcessCommand(Keys.T, otherWindow, otherPid, "Discord"), "A game's chat key does not apply in Discord.");
-Check(!guard.ProcessCommand(Keys.Control | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta"), "Chat shortcuts require exact modifiers.");
+Check(!guard.ProcessCommand(Keys.Control | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta"), "Ctrl must not activate a plain game-chat shortcut.");
 Check(guard.ProcessCommand(Keys.T, gameWindow, gamePid, "robloxplayerbeta.EXE"), "Process matching ignores case and optional exe suffix.");
 Check(Reason() == "게임 채팅 입력 중", "Chat key latches protection for the game.");
 Check(guard.IsChatProtected(gameWindow, gamePid), "The explicit chat query identifies the latched game.");
@@ -324,5 +324,107 @@ Check(ordered.TryRead(out var failedProbe) && failedProbe.TextInputBlocked,
 int contextCalls = 0;
 ordered.Observe((uint)Keys.A, 0, 0, true, () => { contextCalls++; return default; });
 Check(contextCalls == 0 && !ordered.TryRead(out _), "Unrelated typed keys are not queued or sent to the metadata probe.");
+
+// Holding Shift for sprint/capitalization must not create a gap between the
+// microphone's plain-key matcher and the game's chat-opening protection.
+var shiftedGuard = new TypingGuardPolicy();
+var shiftedSettings = IntegrationSettings();
+shiftedGuard.Configure(shiftedSettings);
+Check(shiftedGuard.ProcessCommand(Keys.Shift | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta")
+    && shiftedGuard.IsChatProtected(gameWindow, gamePid),
+    "A plain T chat rule protects Shift+T before UIA can observe the new chat focus.");
+Check(!shiftedGuard.ProcessCommand(Keys.Shift | Keys.Enter, gameWindow, gamePid, "RobloxPlayerBeta")
+    && shiftedGuard.IsChatProtected(gameWindow, gamePid),
+    "Shift+Enter still cannot close a chat opened with Shift+T.");
+Check(!shiftedGuard.ProcessCommand(Keys.Shift | Keys.Escape, gameWindow, gamePid, "RobloxPlayerBeta")
+    && shiftedGuard.IsChatProtected(gameWindow, gamePid),
+    "Shift+Escape also leaves the shifted chat latch intact.");
+shiftedGuard.ResumeCurrentWindow(gameWindow, gamePid);
+foreach (var modifiers in new[] { Keys.Control, Keys.Alt, Keys.Control | Keys.Shift, Keys.Alt | Keys.Shift })
+{
+    Check(!shiftedGuard.ProcessCommand(modifiers | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta")
+        && !shiftedGuard.IsChatProtected(gameWindow, gamePid),
+        $"Unexpected {modifiers} cannot activate a plain T chat rule.");
+}
+Check(!shiftedGuard.ProcessCommand(pause | Keys.Shift, gameWindow, gamePid, "RobloxPlayerBeta")
+    && !shiftedGuard.ManualPaused, "Adding Shift to the explicit pause chord must not activate it.");
+shiftedSettings.PauseShortcut = new(Keys.F10);
+shiftedGuard.Configure(shiftedSettings);
+Check(!shiftedGuard.ProcessCommand(Keys.Shift | Keys.F10, gameWindow, gamePid, "RobloxPlayerBeta")
+    && !shiftedGuard.ManualPaused, "Even a plain pause shortcut retains exact matching.");
+Check(shiftedGuard.ProcessCommand(Keys.F10, gameWindow, gamePid, "RobloxPlayerBeta")
+    && shiftedGuard.ManualPaused, "The exact plain pause shortcut continues to work.");
+shiftedGuard.ResumeCurrentWindow(gameWindow, gamePid);
+shiftedSettings.ChatRules[0].OpenShortcut = new(Keys.T, Shift: true);
+shiftedGuard.Configure(shiftedSettings);
+Check(!shiftedGuard.ProcessCommand(Keys.T, gameWindow, gamePid, "RobloxPlayerBeta"),
+    "An explicitly configured Shift+T chat rule still requires Shift.");
+Check(!shiftedGuard.ProcessCommand(Keys.Control | Keys.Shift | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta"),
+    "Explicit Shift+T cannot gain an unexpected Ctrl modifier.");
+Check(shiftedGuard.ProcessCommand(Keys.Shift | Keys.T, gameWindow, gamePid, "RobloxPlayerBeta"),
+    "The exact explicit Shift+T chat rule still activates normally.");
+
+ConfigureQueue(Keys.T);
+integrationGuard.Configure(IntegrationSettings());
+integrationGuard.ResumeCurrentWindow(gameWindow, gamePid);
+integratedTalk.Reset(TalkMode.ToggleMute, false);
+Key(Keys.LShiftKey, true);
+Key(Keys.W, true);
+Tap(Keys.T);
+Drain();
+Check(integratedTalk.Muted && integrationGuard.IsChatProtected(gameWindow, gamePid),
+    "Shift+W+T sharing the chat/PTT key prioritizes chat protection in the same event queue.");
+Key(Keys.W, false);
+Key(Keys.LShiftKey, false);
+Drain();
+Check(integratedTalk.Muted, "Releasing sprint keys cannot replay a chat-blocked PTT tap.");
+
+// Without a T chat rule, the exact movement combination from the user report
+// must reach the microphone policy, while uppercase typing remains protected.
+var noChatRules = IntegrationSettings();
+noChatRules.ChatRules.Clear();
+integrationGuard.Configure(noChatRules);
+foreach (var mode in Enum.GetValues<TalkMode>())
+{
+    ConfigureQueue(Keys.T);
+    integratedTalk.Reset(mode, false);
+    Key(Keys.LShiftKey, true);
+    Key(Keys.W, true);
+    Key(Keys.T, true);
+    Drain();
+    Check(!integratedTalk.Muted && !integrationGuard.IsChatProtected(gameWindow, gamePid),
+        $"{mode}: Shift+W+T opens the microphone when no T chat rule is configured.");
+    Key(Keys.T, false);
+    Drain();
+    Check(integratedTalk.Muted == (mode == TalkMode.HoldToTalk),
+        $"{mode}: releasing T while sprinting preserves the configured hold/toggle semantics.");
+}
+foreach (bool initiallyMuted in new[] { true, false })
+{
+    ConfigureQueue(Keys.T);
+    integratedTalk.Reset(TalkMode.ToggleMute, false);
+    if (!initiallyMuted) { integratedTalk.Update(true); integratedTalk.Update(false); }
+    Key(Keys.LShiftKey, true);
+    Tap(Keys.T, textBlocked: true);
+    Key(Keys.LShiftKey, false);
+    Drain();
+    Check(integratedTalk.Muted == initiallyMuted,
+        "Uppercase T typed into an input preserves the current toggle state after Shift-compatible matching.");
+}
+
+ConfigureQueue(Keys.T);
+integrationGuard.Configure(IntegrationSettings());
+integrationGuard.ResumeCurrentWindow(gameWindow, gamePid);
+integratedTalk.Reset(TalkMode.ToggleMute, false);
+Key(Keys.LWin, true);
+Key(Keys.LShiftKey, true);
+Key(Keys.W, true);
+Tap(Keys.T);
+Key(Keys.W, false);
+Key(Keys.LShiftKey, false);
+Key(Keys.LWin, false);
+Drain();
+Check(integratedTalk.Muted && !integrationGuard.IsChatProtected(gameWindow, gamePid),
+    "Windows+Shift+W+T is neither a game chat command nor a microphone shortcut.");
 
 Console.WriteLine($"PASS: {checks} typing-guard policy and protected microphone-state checks.");

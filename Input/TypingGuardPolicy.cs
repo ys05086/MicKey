@@ -86,7 +86,10 @@ public sealed class TypingGuardPolicy
         var identity = (window, processId);
         string name = NormalizeProcessName(processName);
         if (pressed is not null && chatRules.TryGetValue(name, out var chatShortcut)
-            && pressed == chatShortcut)
+            // Chat protection must accept the same Shift-compatible plain key as
+            // PTT, or Shift+T could toggle before the opened chat gains UIA focus.
+            // The explicit pause command above intentionally remains exact.
+            && chatShortcut.MatchesKeyData(keyData))
         {
             chatWindows.Add(identity);
             return true;

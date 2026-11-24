@@ -25,18 +25,38 @@ public sealed record Hotkey(Keys Key, bool Control = false, bool Alt = false, bo
         && parsed == this;
 
     /// <summary>
-    /// Reads the current keyboard state. Exact modifiers prevent a plain key binding
-    /// from firing while the same key is being used in an unrelated keyboard shortcut.
+    /// Reads the current keyboard state. A plain binding permits Shift used for
+    /// movement; explicit modifier bindings still require their exact modifiers.
     /// Only the high bit is used; the low bit is shared across other processes.
     /// </summary>
     public bool IsDown()
     {
-        return IsKeyDown(Key)
-            && IsKeyDown(Keys.ControlKey) == Control
-            && IsKeyDown(Keys.Menu) == Alt
-            && IsKeyDown(Keys.ShiftKey) == Shift
-            && !IsKeyDown(Keys.LWin)
-            && !IsKeyDown(Keys.RWin);
+        return MatchesState(IsKeyDown(Key), IsKeyDown(Keys.ControlKey), IsKeyDown(Keys.Menu),
+            IsKeyDown(Keys.ShiftKey), IsKeyDown(Keys.LWin) || IsKeyDown(Keys.RWin));
+    }
+
+    /// <summary>
+    /// Shared pure matching rule for polling and hook events. Only a completely
+    /// unmodified binding tolerates extra Shift. Ctrl, Alt and Windows shortcuts
+    /// remain separate, and explicitly configured modifier chords remain exact.
+    /// </summary>
+    public bool MatchesState(bool keyDown, bool controlDown, bool altDown, bool shiftDown, bool windowsDown = false)
+    {
+        bool plainBinding = !Control && !Alt && !Shift;
+        return keyDown && !windowsDown && controlDown == Control && altDown == Alt
+            && (plainBinding || shiftDown == Shift);
+    }
+
+    /// <summary>
+    /// Matches event metadata without changing shortcut capture or record equality.
+    /// Keys has no Windows-modifier flag; callers with that metadata pass it separately.
+    /// </summary>
+    public bool MatchesKeyData(Keys keyData, bool windowsDown = false)
+    {
+        const Keys knownBits = Keys.KeyCode | Keys.Control | Keys.Alt | Keys.Shift;
+        if ((keyData & ~knownBits) != 0 || (keyData & Keys.KeyCode) != Key) return false;
+        return MatchesState(true, (keyData & Keys.Control) != 0, (keyData & Keys.Alt) != 0,
+            (keyData & Keys.Shift) != 0, windowsDown);
     }
 
     public static bool TryFromKeyData(Keys keyData, out Hotkey? hotkey)

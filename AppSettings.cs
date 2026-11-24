@@ -51,12 +51,25 @@ internal sealed class AppSettings
         Sound.Normalize();
         Overlay.Normalize();
         InputGuard.Normalize();
-        if (InputGuard.PauseShortcut == Shortcut)
+        if (PauseShortcutConflicts(InputGuard.PauseShortcut))
         {
             var defaultPause = new Hotkey(Keys.F10, Control: true, Alt: true);
-            InputGuard.PauseShortcut = Shortcut == defaultPause
+            InputGuard.PauseShortcut = PauseShortcutConflicts(defaultPause)
                 ? new Hotkey(Keys.F11, Control: true, Alt: true) : defaultPause;
         }
+    }
+
+    /// <summary>
+    /// Pause is an exact chord, while a plain microphone binding also matches
+    /// extra Shift. Test the pause chord against the microphone's runtime rule;
+    /// the inverse comparison would incorrectly reject mic Shift+T / pause T.
+    /// </summary>
+    public bool PauseShortcutConflicts(Hotkey candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        var keyData = candidate.Key | (candidate.Control ? Keys.Control : Keys.None)
+            | (candidate.Alt ? Keys.Alt : Keys.None) | (candidate.Shift ? Keys.Shift : Keys.None);
+        return Shortcut.MatchesKeyData(keyData);
     }
 
     /// <summary>
