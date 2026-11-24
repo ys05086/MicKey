@@ -18,6 +18,8 @@ public sealed class TalkStateMachine
     private bool _inputBlocked;
 
     public bool Muted { get; private set; } = true;
+    /// <summary>An explicit manual opening in hold mode, independent of shortcut protection.</summary>
+    public bool ManualHoldOpen { get; private set; }
     public bool InputBlocked => _inputBlocked;
     /// <summary>The last processed chord state, not the observer's final queued state.</summary>
     public bool LastKeyDown => _wasDown;
@@ -32,8 +34,9 @@ public sealed class TalkStateMachine
 
     /// <summary>
     /// Pauses shortcut activation without changing an existing toggle-mode state.
-    /// Hold mode mutes immediately. On leaving the block, a held shortcut must be
-    /// released before it can activate again. Returns the desired mute state.
+    /// Hold mode mutes immediately unless explicitly opened by ToggleManual.
+    /// On leaving the block, a held shortcut must be released before it can
+    /// activate again. Returns the desired mute state.
     /// Reapplying an unchanged, unblocked state does not consume a pending edge.
     /// </summary>
     public bool SetInputBlocked(bool blocked, bool keyDown)
@@ -43,7 +46,24 @@ public sealed class TalkStateMachine
         _inputBlocked = blocked;
         _wasDown = keyDown;
         _waitingForRelease = keyDown;
-        if (_mode == TalkMode.HoldToTalk) Muted = true;
+        if (_mode == TalkMode.HoldToTalk && !ManualHoldOpen) Muted = true;
+        return Muted;
+    }
+
+    /// <summary>
+    /// Explicit UI action, permitted even while shortcuts are blocked. In hold
+    /// mode a manual opening remains open until another manual action, a safety
+    /// mute/reset, or a fresh allowed shortcut press resumes ordinary hold mode.
+    /// A key already held at the click must be released without undoing the
+    /// manual action. The owner should discard queued pre-click keyboard edges
+    /// and pass the current chord snapshot. Returns the desired mute state.
+    /// </summary>
+    public bool ToggleManual(bool keyDown)
+    {
+        Muted = !Muted;
+        ManualHoldOpen = _mode == TalkMode.HoldToTalk && !Muted;
+        _wasDown = keyDown;
+        _waitingForRelease = keyDown;
         return Muted;
     }
 
@@ -53,10 +73,11 @@ public sealed class TalkStateMachine
         if (_inputBlocked)
         {
             // Consume both edges while blocked. They must never be replayed when
-            // focus returns, and a hold-mode release must always leave it muted.
+            // focus returns. Shortcut-controlled hold mode stays muted; an
+            // explicit manual opening is independent of this shortcut-only guard.
             _wasDown = keyDown;
             _waitingForRelease = keyDown;
-            if (_mode == TalkMode.HoldToTalk) Muted = true;
+            if (_mode == TalkMode.HoldToTalk && !ManualHoldOpen) Muted = true;
             return Muted;
         }
 
@@ -69,7 +90,8 @@ public sealed class TalkStateMachine
 
         if (_mode == TalkMode.HoldToTalk)
         {
-            Muted = !keyDown;
+            if (ManualHoldOpen && keyDown && !_wasDown) ManualHoldOpen = false;
+            Muted = !ManualHoldOpen && !keyDown;
         }
         else if (keyDown && !_wasDown)
         {
@@ -98,6 +120,7 @@ public sealed class TalkStateMachine
     public void ForceMute(bool keyDown)
     {
         Muted = true;
+        ManualHoldOpen = false;
         _wasDown = keyDown;
         _waitingForRelease = keyDown;
     }

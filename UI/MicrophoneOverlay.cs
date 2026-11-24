@@ -22,6 +22,7 @@ public sealed class MicrophoneOverlay : Form
     private bool changingLayout;
     private string shortcut = "V";
     private string? inputProtection;
+    private bool manualOpen;
     private Point dragPointerOrigin;
     private Point dragWindowOrigin;
 
@@ -77,15 +78,16 @@ public sealed class MicrophoneOverlay : Form
         Invalidate();
     }
 
-    public void SetStatus(bool active, bool muted, string shortcut, bool error = false, string? inputProtection = null)
+    public void SetStatus(bool active, bool muted, string shortcut, bool error = false, string? inputProtection = null, bool manualOpen = false)
     {
         if (IsDisposed) return;
-        bool changed = this.active != active || this.muted != muted || this.error != error || this.shortcut != shortcut || this.inputProtection != inputProtection;
+        bool changed = this.active != active || this.muted != muted || this.error != error || this.shortcut != shortcut || this.inputProtection != inputProtection || this.manualOpen != manualOpen;
         this.active = active;
         this.muted = muted;
         this.error = error;
         this.shortcut = shortcut ?? "";
         this.inputProtection = inputProtection;
+        this.manualOpen = manualOpen;
         UpdateVisibility();
         if (changed) Invalidate();
     }
@@ -233,7 +235,9 @@ public sealed class MicrophoneOverlay : Form
         var shortcutBounds = Rectangle.Round(new RectangleF(71 * scale, 38 * scale, Width - 86 * scale, 20 * scale));
         var textFlags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter;
         TextRenderer.DrawText(graphics, title, titleFont, titleBounds, color, textFlags);
-        TextRenderer.DrawText(graphics, (inputProtection is null ? "단축키  " : "입력 보호 · ") + shortcut,
+        string subtitle = manualOpen ? (inputProtection is null ? "수동 켜짐 · " : "수동 켜짐 · 입력 보호 · ") + shortcut
+            : (inputProtection is null ? "단축키  " : "입력 보호 · ") + shortcut;
+        TextRenderer.DrawText(graphics, subtitle,
             shortcutFont, shortcutBounds, inputProtection is null ? Theme.Secondary : Theme.Amber, textFlags);
 
         if (editing)

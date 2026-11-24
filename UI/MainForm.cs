@@ -7,7 +7,7 @@ namespace MicPtt.UI;
 
 internal sealed class MainForm : Form
 {
-    private readonly AppSettings settings = AppSettings.Load();
+    private readonly AppSettings settings;
     private readonly TalkStateMachine policy = new();
     private readonly TypingGuardPolicy typingGuard = new();
     private readonly TextInputDetector textInputs = new();
@@ -26,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly RoundedButton toggle = new() { Text = "한 번 눌러 전환" };
     private readonly RoundedButton shortcut = new();
     private readonly RoundedButton start = new() { Text = "마이크 제어 시작", Accent = true };
+    private readonly RoundedButton microphoneToggle = new();
     private readonly RoundedButton hide = new() { Text = "트레이로 숨기기" };
     private readonly RoundedButton preferencesButton = new() { Text = "설정 · 입력 보호 · 효과음 · 오버레이" };
     private readonly FeedbackSoundPlayer sounds = new();
@@ -39,7 +40,8 @@ internal sealed class MainForm : Form
     private readonly Label saveNote = new();
     private readonly NotifyIcon tray = new();
     private readonly ToolStripMenuItem trayStart = new("마이크 제어 시작");
-    private readonly ToolStripMenuItem trayMute = new("지금 음소거");
+    private readonly ToolStripMenuItem trayStatus = new() { Enabled = false };
+    private readonly ToolStripMenuItem trayToggle = new();
     private readonly Icon idleIcon = Theme.CreateIcon(Theme.Secondary);
     private readonly Icon mutedIcon = Theme.CreateIcon(Theme.Amber);
     private readonly Icon talkingIcon = Theme.CreateIcon(Theme.Mint);
@@ -55,8 +57,10 @@ internal sealed class MainForm : Form
     private bool? lastApplied;
     private string? notice;
 
-    public MainForm()
+    public MainForm(AppSettings? initialSettings = null)
     {
+        settings = initialSettings ?? AppSettings.Load();
+        settings.Normalize();
         Text = "MicKey · 마이크 단축키";
         ClientSize = new Size(560, 742);
         AutoScaleDimensions = new SizeF(96, 96);
@@ -111,12 +115,17 @@ internal sealed class MainForm : Form
         Controls.Add(card);
         statusTag.Bounds = new(20, 12, 472, 24);
         statusTag.Font = new Font("Segoe UI", 9, FontStyle.Bold);
-        statusTitle.Bounds = new(20, 40, 472, 42);
+        statusTitle.Bounds = new(20, 40, 280, 42);
         statusTitle.Font = new Font("맑은 고딕", 20, FontStyle.Bold);
         statusDetail.Bounds = new(20, 86, 472, 42);
         statusDetail.ForeColor = Theme.Secondary;
         statusDetail.Font = new Font("맑은 고딕", 9);
         card.Controls.AddRange([statusTag, statusTitle, statusDetail]);
+        microphoneToggle.Bounds = new(308, 40, 184, 42);
+        microphoneToggle.Font = new Font("맑은 고딕", 9, FontStyle.Bold);
+        microphoneToggle.Click += (_, _) => ToggleMicrophone();
+        tips.SetToolTip(microphoneToggle, "마이크를 직접 켜거나 음소거합니다. PTT에서 직접 켠 상태는 다음 단축키 누름·해제까지 유지됩니다.");
+        card.Controls.Add(microphoneToggle);
 
         AddLabel(this, "입력 마이크", new(24, 260, 400, 26), 10, Theme.Text, true);
         devices.Bounds = new(24, 292, 396, 34);
@@ -181,11 +190,13 @@ internal sealed class MainForm : Form
     private void BuildTray()
     {
         var menu = new ContextMenuStrip();
+        menu.Items.Add(trayStatus);
+        menu.Items.Add(trayToggle);
+        trayToggle.Click += (_, _) => ToggleMicrophone();
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("MicKey 열기", null, (_, _) => RestoreWindow());
         menu.Items.Add(trayStart);
         trayStart.Click += (_, _) => { if (active) StopControl(); else StartControl(); };
-        menu.Items.Add(trayMute);
-        trayMute.Click += (_, _) => ForceMute();
         menu.Items.Add("입력 보호 해제", null, (_, _) => ResumeInputProtection());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("설정 · 입력 보호 · 효과음 · 오버레이", null, (_, _) => OpenPreferences());
@@ -194,6 +205,7 @@ internal sealed class MainForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("종료 · 이전 마이크 상태 복원", null, (_, _) => Close());
         tray.ContextMenuStrip = menu;
+        menu.Opening += (_, _) => UpdateUi();
         tray.DoubleClick += (_, _) => RestoreWindow();
         tray.Icon = idleIcon;
         tray.Text = "MicKey · 시작 전";
@@ -238,7 +250,7 @@ internal sealed class MainForm : Form
         UpdateUi();
     }
 
-    private void StartControl()
+    private void StartControl(bool playFeedback = true)
     {
         if (active || devices.SelectedItem is not AudioDevice selected || !availableDeviceIds.Contains(selected.Id)) return;
         if (capturing) EndCapture(null);
@@ -269,7 +281,7 @@ internal sealed class MainForm : Form
             notice = null;
             policy.Reset(settings.Mode, settings.Shortcut.IsDown());
             verifyClock.Restart();
-            PlayFeedback(true);
+            if (playFeedback) PlayFeedback(true);
         }
         catch (Exception ex)
         {
@@ -459,6 +471,35 @@ internal sealed class MainForm : Form
         UpdateUi();
     }
 
+    private void ToggleMicrophone()
+    {
+        if (closing || locked || suspended || capturing || preferencesOpen) return;
+        if (!active) StartControl(playFeedback: false);
+        if (!active || endpoint is null) return;
+        try
+        {
+            // Preserve pending chat/pause commands, but discard earlier microphone
+            // edges so they cannot undo this explicit click on the next timer tick.
+            while (keyboard is not null && keyboard.TryReadSignal(out var signal))
+                if (signal.Kind == KeyboardSignalKind.Command)
+                    typingGuard.ProcessCommand(signal.KeyData, signal.WindowHandle, signal.ProcessId, GetProcessName(signal.ProcessId));
+            keyboard?.Configure(settings.Shortcut);
+            bool keyDown = keyboard?.CurrentIsDown ?? settings.Shortcut.IsDown();
+            UpdateGuardReason(TextInputDetector.GetForegroundInfo());
+            policy.SetInputBlocked(inputGuardReason is not null, keyDown);
+
+            // A headset/Windows mute may have changed since the last timer tick.
+            // Reconcile policy without sending an intermediate mute to the device.
+            bool actualMuted = endpoint.IsMuted;
+            policy.ForceMute(keyDown);
+            if (actualMuted) policy.ToggleManual(keyDown);
+            lastApplied = actualMuted;
+            ApplyMuted(!actualMuted);
+            UpdateUi();
+        }
+        catch (Exception ex) { FailClosed(ex); }
+    }
+
     private void FailClosed(Exception ex)
     {
         // An inaccessible/disconnected microphone must never cause another endpoint to be opened.
@@ -479,18 +520,22 @@ internal sealed class MainForm : Form
     private void UpdateUi()
     {
         bool speaking = active && lastApplied == false;
+        bool manualOpen = speaking && policy.ManualHoldOpen;
         Color stateColor = speaking ? Theme.Mint : active ? Theme.Amber : Theme.Secondary;
         statusTag.Text = active ? (settings.Mode == TalkMode.HoldToTalk ? "●  PUSH TO TALK" : "●  TOGGLE MUTE") : "○  READY";
         statusTag.ForeColor = stateColor;
-        if (active && inputGuardReason is not null) statusTag.Text = "●  INPUT GUARD";
-        statusTitle.Text = notice is not null ? "마이크를 확인해 주세요" : !active ? "시작할 준비가 됐어요" :
-            speaking ? (settings.Mode == TalkMode.HoldToTalk ? "말하는 중" : "마이크 켜짐") : "음소거 중";
+        if (manualOpen) statusTag.Text = "●  MANUAL ON";
+        if (active && inputGuardReason is not null) statusTag.Text = manualOpen ? "●  MANUAL ON · INPUT GUARD" : "●  INPUT GUARD";
+        statusTitle.Text = notice is not null ? "마이크 확인 필요" : !active ? "제어 대기 중" :
+            speaking ? (manualOpen || settings.Mode == TalkMode.ToggleMute ? "마이크 켜짐" : "말하는 중") : "음소거 중";
         statusTitle.ForeColor = notice is not null ? Theme.Red : stateColor;
         statusDetail.Text = notice ?? (preferencesOpen && active ? "설정창을 사용하는 동안에는 음소거됩니다." :
             capturing ? "새 단축키를 누르세요. Ctrl / Alt / Shift 조합도 가능해요.\nEsc를 누르면 취소합니다." :
             locked || suspended ? "잠금 또는 절전 중에는 마이크를 음소거합니다." :
+            manualOpen ? "직접 켠 상태예요. 버튼을 다시 누르면 음소거합니다.\n" +
+                (inputGuardReason is not null ? "입력 보호 중에도 직접 켠 상태는 유지됩니다." : "단축키를 새로 눌렀다 놓으면 PTT로 돌아갑니다.") :
             active && inputGuardReason is not null ? inputGuardReason + " · 단축키를 잠갔어요.\n수동 잠금/해제: " + settings.InputGuard.PauseShortcut.DisplayName :
-            !active ? "마이크와 단축키를 선택하고 시작하세요.\n시작할 때는 항상 음소거 상태예요." :
+            !active ? "위 버튼으로 바로 켜거나, 아래에서 제어를 시작하세요.\n아래의 제어 시작 버튼은 음소거 상태로 시작합니다." :
             settings.Mode == TalkMode.HoldToTalk ? $"[ {settings.Shortcut.DisplayName} ] 키를 누르는 동안만 소리가 전달돼요.\n키를 놓으면 다시 음소거됩니다." :
             $"[ {settings.Shortcut.DisplayName} ] 키를 한 번 누르면 상태가 바뀌어요.\n다시 누르면 마이크가 { (speaking ? "꺼집니다" : "켜집니다") }.");
         shortcut.Text = capturing ? "새 단축키 입력…   (Esc 취소)" : settings.Shortcut.DisplayName + "     ·     변경";
@@ -506,13 +551,20 @@ internal sealed class MainForm : Form
         start.Invalidate();
         trayStart.Text = start.Text;
         trayStart.Enabled = start.Enabled;
-        trayMute.Enabled = active;
+        microphoneToggle.Enabled = start.Enabled && !closing && !locked && !suspended && !capturing && !preferencesOpen;
+        microphoneToggle.Text = !active ? "시작 · 마이크 켜기" : speaking ? "마이크 음소거" : "마이크 켜기";
+        microphoneToggle.AccessibleName = microphoneToggle.Text;
+        microphoneToggle.Accent = !speaking;
+        microphoneToggle.Invalidate();
+        trayToggle.Text = microphoneToggle.Text;
+        trayToggle.Enabled = microphoneToggle.Enabled;
+        trayStatus.Text = !active ? "상태: 제어 중지" : speaking ? (manualOpen ? "상태: 마이크 켜짐 · 수동" : "상태: 마이크 켜짐") : "상태: 음소거";
         var currentIcon = speaking ? talkingIcon : active ? mutedIcon : idleIcon;
         tray.Icon = currentIcon;
         Icon = currentIcon;
         tray.Text = "MicKey · " + (active ? speaking ? "마이크 켜짐" : "음소거" : "제어 중지") + " · " + settings.Shortcut.DisplayName;
         trayOverlay.Checked = settings.Overlay.Enabled;
-        overlay.SetStatus(active, !speaking, settings.Shortcut.DisplayName, notice is not null, active ? inputGuardReason : null);
+        overlay.SetStatus(active, !speaking, settings.Shortcut.DisplayName, notice is not null, active ? inputGuardReason : null, manualOpen);
     }
 
     private void PlayFeedback(bool muted, bool preview = false)
